@@ -4,6 +4,8 @@ import { z } from "zod";
 import { customModel } from "@/ai";
 import { auth } from "@/app/(auth)/auth";
 import { deleteChatById, getChatById, saveChat } from "@/db/queries";
+import { LOCATION_QUERY_BY_NAME, RESERVATION_QUERY_BY_LOCATION_AND_DATE } from "@/lib/apollo/queries";
+import { globalClient } from "@/lib/apollo/globalClient";
 
 export async function POST(request: Request) {
   const { id, messages }: { id: string; messages: Array<Message> } =
@@ -20,7 +22,7 @@ export async function POST(request: Request) {
   const result = await streamText({
     model: customModel,
     system:
-      "you are a friendly assistant! keep your responses concise and helpful.",
+      "you are a friendly assistant for a marina company with many locations! You will answer most questions about the marina by querying the database using the tools provided. Most of the data responses will be in JSON Format, with property names mostly self-explanatory. The marinas themselves are known a Locations in the database. The customers are known as Members. Individual boat launches are known as Reservations, except past reservations will usually come from the ArchivedReservations table. Anything involving a date or datetime will be a string in the format YYYYMMDDHHmmssfff. For example, if I asked you how many boats were launched in June, you might look for all past reservations with a LaunchDateTime greater than 20240601000000000 and less than 20240701000000000. Each Reservation is associate with a Boat, and a Member. Amenities are also known as Items, or IndividualItems in the database when they are given to a reservation.Keep your responses concise and helpful.",
     messages: coreMessages,
     maxSteps: 5,
     tools: {
@@ -37,6 +39,66 @@ export async function POST(request: Request) {
 
           const weatherData = await response.json();
           return weatherData;
+        },
+      },
+      getMarinaData: {
+        description: "Get data pertaining to a specific marina location",
+        parameters: z.object({
+          name: z.string(),
+        }),
+        execute: async ({name}) => {
+          try {
+            const { data: locationData, error: locationError } = await globalClient.query({
+              query: LOCATION_QUERY_BY_NAME,
+              variables: { Name: name },
+            });
+            if (locationError) {
+              console.error("Error fetching location data`:", locationError);
+              return { error: "Failed to fetch location data" };
+            }
+
+            if (locationData.Locations.length === 0) {
+              return {
+                error: "Something went wrong"
+              }
+            }
+            const location = locationData.Locations[0];
+            return location;
+          } catch (error) {
+            console.error("Error fetching location data:", error);
+            return { error: "Failed to fetch location data" };
+          }
+        },
+      },
+      getPastReservations: {
+        description: "Get data pertaining to past reservations at a specific marina location, in a given date range",
+        parameters: z.object({
+          marinaName: z.string(),
+          startDateTime: z.string(),
+          endDateTime: z.string(),
+        }),
+        execute: async ({marinaName, startDateTime, endDateTime}) => {
+          try {
+            const { data: reservationData, error: reservationError } = await globalClient.query({
+              query: RESERVATION_QUERY_BY_LOCATION_AND_DATE,
+              variables: { StartDateTime: startDateTime, EndDateTime: endDateTime, LocationName: marinaName },
+            });
+            if (reservationError) {
+              console.error("Error fetching Reservation data`:", reservationError);
+              return { error: "Failed to fetch reservation data" };
+            }
+
+            if (reservationData.ArchivedReservations.length === 0) {
+              return {
+                error: "Something went wrong"
+              }
+            }
+            const reservations = reservationData.ArchivedReservations;
+            return reservations;
+          } catch (error) {
+            console.error("Error fetching reservation data:", error);
+            return { error: "Failed to fetch reservation data" };
+          }
         },
       },
     },
